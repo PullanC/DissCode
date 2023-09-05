@@ -1,0 +1,96 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import csv
+
+def convert_to_float_list(value):
+    # Remove parentheses and split the string into a list of floats
+    cleaned_value = value.strip('()')
+    return [float(x) for x in cleaned_value.split(', ')]
+
+def create_graph(csv_filename, title):
+    # Initialize empty lists to store data
+    time_data = []
+    x_data = []
+    y_data = []
+    z_data = []
+
+    # Read data from CSV file
+    with open(csv_filename, 'r') as csvfile:
+        csv_reader = csv.DictReader(csvfile)
+        for row in csv_reader:
+            time_data.append(float(row['Time']))
+            x_data.append(convert_to_float_list(row['X'])[0])  # Only the first value from X
+            y_data.append(convert_to_float_list(row['Y'])[0])  # Only the first value from Y
+            z_data.append(convert_to_float_list(row['Z'])[0])  # Only the first value from Z
+
+    # Create a figure and axis
+    fig, ax = plt.subplots()
+
+    # Plot x, y, and z data with time on the x-axis, specifying labels and colors
+    ax.plot(time_data, x_data, label='x direction', color='red', linewidth=0.7)
+    ax.plot(time_data, y_data, label='y direction', color='green', linewidth=0.7)
+    ax.plot(time_data, z_data, label='z direction', color='blue', linewidth=0.7)
+
+    ax.set_ylim(-0.2, 0.2)
+
+    # Add labels and title
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Velocity (m/s)')
+
+    # Add a legend
+    ax.legend()
+
+    # Show the plot
+    plt.show()
+
+def create_forceprofile(csv_filename, title):
+    # Initialize empty lists to store data
+    time_data = []
+    F1_data = []
+    F2_data = []
+    F3_data = []
+
+    # Read data from CSV file
+    with open(csv_filename, 'r') as csvfile:
+        csv_reader = csv.DictReader(csvfile)
+        for row in csv_reader:
+            time_data.append(float(row['Time']))
+            F1_data.append(convert_to_float_list(row['F1'])[0])  # Only the first value from X
+            F2_data.append(convert_to_float_list(row['F2'])[0])  # Only the first value from Y
+            F3_data.append(convert_to_float_list(row['F3'])[0])  # Only the first value from Z
+
+    # Create a figure and axis
+    fig, ax = plt.subplots()
+
+    # Plot x, y, and z data with time on the x-axis, specifying labels and colors
+    ax.plot(time_data, F1_data, label='Finger 1 applied force', color='red', linewidth=0.7)
+    ax.plot(time_data, F2_data, label='Finger 2 applied force', color='green', linewidth=0.7)
+    ax.plot(time_data, F3_data, label='Finger 3 applied force', color='blue', linewidth=0.7)
+
+    ax.set_ylim(-0, 50)
+
+    # Add labels and title
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Force (N)')
+
+    # Add a legend
+    ax.legend()
+
+    # Show the plot
+    plt.show()
+
+
+
+# File paths for the other CSV files
+csv_filename1 = r'C:\Users\ge22496\OneDrive - University of Bristol\Documents\Python Code\datafinger1'
+csv_filename2 = r'C:\Users\ge22496\OneDrive - University of Bristol\Documents\Python Code\datafinger2'
+csv_filename3 = r'C:\Users\ge22496\OneDrive - University of Bristol\Documents\Python Code\datafinger3'
+csv_filename4 = r'C:\Users\ge22496\OneDrive - University of Bristol\Documents\Python Code\datafingerforce'
+
+
+# Create graphs for the other CSV files
+create_graph(csv_filename1, "Graph for datafinger1")
+create_graph(csv_filename2, "Graph for datafinger2")
+create_graph(csv_filename3, "Graph for datafinger3")
+create_forceprofile(csv_filename4, "Graph for applied forces")
+
