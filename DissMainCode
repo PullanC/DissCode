@@ -1,0 +1,852 @@
+import pybullet as p
+import pybullet_data as pd
+import os
+import time
+import math
+import numpy as np
+import sympy as sp
+import autograd.numpy as agnp
+from autograd import jacobian
+import csv
+
+# The jacobian function isnt working because of the DOF, I think this is beacuse I'm only looking
+# at one finger at a time and the inverse kinematics that is called within the function
+# returns an array of 8DOF which is every finger joint angle.DONE
+
+# The average grip force used in daily activities is 70 Newtons. Therefore average Nm is
+# about 7 per finger given the length.
+
+# FIGURE OUT WHY THE FINGER 3/4 CHANGED ANGLE BASED ON OBJECT ORIENTATION. DONT BOTHER WITH THIS WASTE OF TIME
+
+# CHANGE THE VALUE OF THE 2ND JOINT TO BE A FUNCTION OF THE FIRST FINGER AS THESE ARE UNDERACTUATED. DONE THIS ONE TOO
+
+# CHANGE THE VALUE OF FD BASED ON THE VELOCITY OF THE OBJECT. maybe have when the tangential force
+#is greater than the normal force then the threshold is started. Start with constant and then if
+# greater than tf then change to function force. THIS HAS BEEN DONE NOW
+
+# CHANGE FRICTION TO ACCURATE VALUES. THIS HAS BEEN DONE
+
+velocity_profile1x = []
+velocity_profile2x = []
+velocity_profile3x = []
+velocity_profile1y = []
+velocity_profile2y = []
+velocity_profile3y = []
+velocity_profile1z = []
+velocity_profile2z = []
+velocity_profile3z = []
+fdprofile1 = []
+fdprofile2 = []
+fdprofile3 = []
+timearray = []
+tk = 0
+fc = 20
+#fd = 70
+r = 1
+springconstant = 0.0000027773
+#f_d is the constant times the raio of the object contact velocity/ fingertip contact velocity
+#get contact point of object, store this as temporary variable in this step, compare it against the next step velocity
+
+# tFactor is just tuning (leave as 1 if no issues). If there are  issues then change 
+
+line_color = [1, 0, 0]
+
+def q_return(q):
+    return q
+
+def absvel(vv):
+    av = (math.sqrt((vv[0] **2) + (vv[1] **2) + (vv[2] **2))) + 0.1
+    return av
+
+def jacobian(fingertip_link, h=1e-5):
+    # Look to see if theres modules/packages that use urdf models to calculate jacobians.
+    q11, q12, q13 = find_angles(fingertip_link)
+    J = np.zeros((6,3))
+
+    for i in range(6):
+        # Perturb the position and orientation
+        perturbation = np.zeros(6)
+        perturbation[i] = h
+        q11_perturbed, q12_perturbed, q13_perturbed = find_angles(fingertip_link, perturbation)
+
+        # Calculate new joint angles after perturbation
+        q11_perturbed, q12_perturbed, q13_perturbed = find_angles(fingertip_link, perturbation)
+
+        # Calculate partial derivatives using finite differences
+        dq1_dp = (q11_perturbed - q11) / h
+        dq2_dp = (q12_perturbed - q12) / h
+        dq3_dp = (q13_perturbed - q13) / h
+
+        # Update the Jacobian matrix
+        J[i, 0] = dq1_dp
+        J[i, 1] = dq2_dp
+        J[i, 2] = dq3_dp
+
+    return J
+
+def jacobiancalc(boxId, index, jang, jvel, jacc):
+    print(jang)
+    print(jvel)
+    print(jacc)
+    #com refers to the centre of mass of the finger link end effector (local position)
+    com = np.array(p.getLinkState(boxId,index)[2])
+    print(com)
+    # pass qf_ and qf_dot into calculateJacobian
+    inv_kin = p.calculateInverseKinematics(boxId, index, jang)
+    return inv_kin
+    #J = p.calculateJacobian(boxId, index, com, jang, jvel, jacc)
+    #return J
+    
+    
+
+def inverse_kinematics_tip(fingertip_link, target_position):
+    target_orientation = None
+    current_positions = [p.getJointState(boxId_id, i)[0] for i in range(p.getNumJoints(boxId))]
+    joint_positions = p.calculateInverseKinematics(boxId,
+                                                   fingertip_link,
+                                                   target_position,
+                                                   targetOrientation=target_orientation,
+                                                   restPoses=current_positions,
+                                                   maxNumIterations=1000,
+                                                   residualThreshold=1e-5)
+    if fingertip_link_id == 4:
+        return joint_positions[3:5]
+    elif fingertip_link_id == 7:
+        return joint_positions[6:8]
+    elif fingertip_link_id == 10:
+        return joint_positions[9:11]
+    else:
+        raise ValueError("Invalid fingertip_link_id provided.")
+ 
+def find_angles(fingertip_link, perturbation = None):
+    joint_states = p.getJointStates(boxId, [fingertip_link, (fingertip_link + 1)])
+    joint_angle_1 = joint_states[0][0]  # Joint angle of link 1
+    joint_angle_2 = joint_states[1][0]  # Joint angle of link 2
+    relative_angle = joint_angle_2 - joint_angle_1
+    relative_angle = math.atan2(math.sin(relative_angle), math.cos(relative_angle))
+    #if grasping ==True:
+     #   print("relative angle ", relative_angle)
+    state_n = p.getLinkState(boxId, fingertip_link, computeForwardKinematics=True)
+    #if grasping ==True:
+     #   print("state_n ", state_n[1])
+    if perturbation is not None:
+        # Apply perturbation to the fingertip link position and orientation
+        perturbed_state_n = (
+            state_n[0] + perturbation[:3],  # Position perturbation
+            p.getQuaternionFromEuler(
+                [
+                    state_n[1][0] + perturbation[3],  # Roll perturbation
+                    state_n[1][1] + perturbation[4],  # Pitch perturbation
+                    state_n[1][2] + perturbation[5]   # Yaw perturbation
+                ]
+            )
+        )
+        state_n = perturbed_state_n
+        #if grasping ==True:
+         #   print("state_n ", state_n[1])
+    state_n1 = p.getLinkState(boxId, (fingertip_link+1), computeForwardKinematics=True)
+    #if grasping ==True:
+     #   print("state_n1 ", state_n1[1])
+    rotation_matrixn = np.array(p.getMatrixFromQuaternion(state_n[1])).reshape(3, 3)
+    #if grasping ==True:
+     #   print("rotation_matrix ", rotation_matrixn)
+    rotation_matrixn1 = np.array(p.getMatrixFromQuaternion(state_n1[1])).reshape(3, 3)
+    #if grasping ==True:
+     #   print("rotation_matrixn1 ", rotation_matrixn1)
+    relative_rotation = np.dot(np.transpose(rotation_matrixn1), rotation_matrixn)
+    #if grasping ==True:
+     #   print("relative_rotation ", relative_rotation)
+    joint_axis = np.dot(rotation_matrixn, np.array([1, 0, 0]))  # Get the direction of the joint axis in the global frame
+    #if grasping ==True:
+     #   print("joint_axis  ", joint_axis)
+    q1 = np.arctan2(joint_axis[1], joint_axis[2])  # Compute the angle relative to the x-axis
+    q2 = np.arctan2(joint_axis[0], joint_axis[2])  # Compute the angle relative to the y-axis
+    #q3 = np.arccos(0.5 * (np.trace(relative_rotation) - 1))
+    q3 = relative_angle
+    return q1, q2, q3    
+
+
+def qdot(qf, qfini):
+    qfdot = []
+    for i in range(len(qf)):
+        diff = (qf[i] - qfini[i]) / step
+        if np.isnan(diff):  # Check for NaN
+            qfdot.append(0)  # Replace NaN with 0
+        else:
+            qfdot.append(diff)
+    return qfdot
+
+#def contact_velocity(pos_t, pos_t1):
+ #   for i in range(len(pos_t)):    
+  #      velcont = (pos_t[i] - pos_t1[i])/step
+
+def uT_calc(tFactor, fd, Jv, Jm, ptm, pt):
+    diff_pt = np.array(ptm) - np.array(pt)
+
+    # Instead of using the contact point pt, maybe use the fingertip position instead
+    # use forwards kinematics to calculate the fingertip position
+    
+    norm_diff_pt = np.linalg.norm(diff_pt)
+
+    uT = -tFactor * fd * (np.dot((np.transpose(Jv) - np.transpose(Jm)), (diff_pt / norm_diff_pt)))
+    return uT
+
+def contact_angles(fingertip_link):
+    contact_points = p.getContactPoints(boxId, cubeId, fingertip_link)
+    contact_point = contact_points[0][5]
+    fingertip_pos, fingertip_quat = p.getLinkState(boxId, fingertip_link)[0:2]
+    contact_vector = [contact_point[i] - fingertip_pos[i] for i in range(3)]
+    yaw = math.atan2(contact_vector[1], contact_vector[0])
+    pitch = math.atan2(contact_vector[2], math.sqrt(contact_vector[0]**2 + contact_vector[1]**2))
+    return yaw, pitch
+
+def axis_calculation(objectId):
+    object_state = p.getBasePositionAndOrientation(objectId)
+    orientation_quat = object_state[1]
+    orientation_matrix = p.getMatrixFromQuaternion(orientation_quat)
+    orientation_matrix = np.array(orientation_matrix).reshape(3, 3)
+    return(orientation_matrix)
+
+def reference_frames(obj_rot):
+    nx1 = np.dot(obj_rot,nx1o)
+    ny1 = np.dot(obj_rot,ny1o)
+    nz1 = np.dot(obj_rot,nz1o)
+    nx2 = np.dot(obj_rot,nx2o)
+    ny2 = np.dot(obj_rot,ny2o)
+    nz2 = np.dot(obj_rot,nz2o)
+    nx3 = np.dot(obj_rot,nx3o)
+    ny3 = np.dot(obj_rot,ny3o)
+    nz3 = np.dot(obj_rot,nz3o)
+    return nx1, ny1, nz1, nx2, ny2, nz2, nx3, ny3, nz3
+
+def uR_calc(rFactor, r, fd1, f2, fd3, Jw1, Jw2, Jw3, Psi, Phi):
+    uR1 = -1 *rFactor * r * fd1 * (np.dot(np.transpose(Jw1) , (nz1 * np.sin(Phi) + ny1 * np.sin(Psi))))
+    uR2 = -rFactor * r * fd2 * (np.dot(np.transpose(Jw2) , (nz2 * np.sin(Phi) - ny2 * np.sin(Psi))))
+    uR3 = -1 * rFactor * r * fd3 * (np.dot(np.transpose(Jw3) , (-nz3 * np.sin(Phi) + ny3 * np.sin(Psi))))
+    return uR1, uR2, uR3
+
+link_indices = [3, 4, 5, 6, 7, 8, 9, 10]
+#link_indices = [3, 4]
+def inertia_calc(boxId, link_indices):
+    joint_positions = [p.getJointState(boxId, joint_index)[0] for joint_index in link_indices]
+    inertia_matrix = np.array(p.calculateMassMatrix(boxId, joint_positions))
+    return inertia_matrix
+
+def joint_vels(link_indices):
+    joint_pos = [p.getJointState(boxId, joint_index)[0] for joint_index in link_indices]
+    joint_velocities = [p.getJointState(boxId, joint_index)[1] for joint_index in link_indices]
+    return joint_pos, joint_velocities
+
+def skew_matrix(v):
+    #n = len(v)
+    #if n < 2:
+    #    raise ValueError("Vector size must be at least 2 for skew-symmetric matrix.")
+    
+    #skew_mat = np.zeros((n, n))
+    #for i in range(n):
+    #    for j in range(n):
+    #        if i != j:
+    #            skew_mat[i, j] = -v[i] * v[j]
+    #return skew_mat - skew_mat.T
+    if v.shape == (3, 1) or v.shape == (1, 3):
+        a, b, c = v.ravel()
+        skew_matrix = np.array([[0, -c, b],
+                                [c, 0, -a],
+                                [-b, a, 0]])
+        return skew_matrix
+    else:
+        raise ValueError("Input matrix must be 3x1 or 1x3")
+
+def Jacobianproper(qf, l):
+    q1, q2, q3 = qf
+    c1 = np.cos(q1)
+    c2 = np.cos(q2)
+    c23 = np.cos(q2 + q3)
+
+    s1 = np.sin(q1)
+    s2 = np.sin(q2)
+    s23 = np.sin(q2 + q3)
+
+    h0 = c2 * l[0] + c23 * l[1]
+    h1 = s2 * l[0] + s23 * l[1]
+    h2 = c23 * l[1]
+    h3 = s23 * l[1]
+
+    Jw1 = np.array([0, 0, 0]).reshape(-1, 1)
+    Jw2 = np.array([-s1, c1, 0]).reshape(-1, 1)
+    Jw3 = np.array([-s1, c1, 0]).reshape(-1, 1)
+    Jw = np.hstack((Jw1, Jw2, Jw3))
+
+    Jv1 = np.array([(-s1*h0[0]), (c1*h0[0]), 0]).reshape(-1, 1)
+    Jv2 = np.array([-c1*h1[0], s1*h1[0], h1[0]*-h0[0]]).reshape(-1, 1)
+    Jv3 = np.array([-c1*h3[0], s1*h3[0], h3[0]*-h2[0]]).reshape(-1, 1)
+    Jv = np.hstack((Jv1, Jv2, Jv3))
+
+    J = np.vstack((Jv, Jw))
+    return J
+
+def JacobianDerivative(qf, qfdot, l):
+    q1, q2, q3 = qf
+    dq1, dq2, dq3 = qfdot
+    qfdot = np.array([[dq1], [dq2], [dq3]])
+
+    c1 = np.cos(q1)
+    c2 = np.cos(q2)
+    c23 = np.cos(q2 + q3)
+
+    s1 = np.sin(q1)
+    s2 = np.sin(q2)
+    s23 = np.sin(q2 + q3)
+
+    h0 = c2 * l[0] + c23 * l[1]
+    h1 = s2 * l[0] + s23 * l[1]
+    h2 = c23 * l[1]
+    h3 = s23 * l[1]
+
+
+    dJw1 = np.array([0, 0, 0]).reshape(-1, 1)
+    dJw2 = np.array([-c1 * dq1, -s1 * dq1, 0]).reshape(-1, 1)
+    dJw3 = np.array([-c1 * dq1, -s1 * dq1, 0]).reshape(-1, 1)
+    dJw = np.hstack((dJw1, dJw2, dJw3))
+
+    dJv11 =  np.dot((np.array([-c1 * h0, s1 * h1, s1 * h3]).reshape(1, -1)), qfdot)
+    dJv21 = np.dot((np.array([-s1 * h0, -c1 * h1, -c1 * h3]).reshape(1, -1)), qfdot)
+    dJv31 = np.array([[0]])
+    dJv1 = np.vstack((dJv11, dJv21, dJv31))
+
+    dJv12 = np.dot((np.array([s1 * h1, -c1 * h0, -c1 * h2]).reshape(1,-1)), qfdot)
+    dJv22 = np.dot((np.array([-c1 * h1, -s1 * h0, -s1 * h2]).reshape(1,-1)), qfdot)
+    dJv32 = np.dot((np.array([0, h1[0], h3[0]]).reshape(1,-1)), qfdot)
+    dJv2 = np.vstack((dJv12, dJv22, dJv32))
+
+    dJv13 = np.dot((np.array([s1 * h3, -c1 * h2, -c1 * h2]).reshape(1,-1)), qfdot)
+    dJv23 = np.dot((np.array([-c1 * h3, -s1 * h2, -s1 * h2]).reshape(1,-1)), qfdot)
+    dJv33 = np.dot((np.array([0, h3[0], h3[0]]).reshape(1,-1)), qfdot)
+    dJv3 = np.vstack((dJv13, dJv23, dJv33))
+
+    dJv = np.hstack((dJv1, dJv2, dJv3))
+
+    dJ = np.vstack((dJv, dJw))
+
+    return dJ
+
+def link_length(pc):
+    parent_frame_position, parent_frame_orientation = p.getBasePositionAndOrientation(boxId)
+    joint4 = np.array(p.getJointInfo(boxId,4)[14])
+    parent_frame_rotation_matrix = np.array(p.getMatrixFromQuaternion(parent_frame_orientation)).reshape(3, 3)
+    joint_global_position4 = parent_frame_position + np.dot(parent_frame_rotation_matrix, joint4)
+    diff = joint_global_position4 - joint4
+    length = math.sqrt( (diff[0]**2) + (diff[1] ** 2) + (diff[2] **2))
+
+    # Look at using the centre of mass instead of the contcatv point for link length calculation
+    # and pt
+    
+    return length
+
+def grasping_contacts(boxId, link, ptx):
+    contacts = p.getContactPoints(boxId, linkIndexA=link)
+    if contacts == ():
+        return ptx
+    #print(contacts)
+    first_element = contacts[0]
+    pt = np.transpose([first_element[5]])
+    #fingertip_pos, fingertip_quat = p.getLinkState(boxId, link)[0:2]
+    #contact_vector = [pt[i] - fingertip_pos[i] for i in range(3)]
+    #yaw = math.atan2(contact_vector[1], contact_vector[0])
+    #pitch = math.atan2(contact_vector[2], math.sqrt(contact_vector[0]**2 + contact_vector[1]**2)) 
+    return pt #, yaw, pitch
+
+def object_contacts(boxId, link, ptx):
+    contacts = p.getContactPoints(boxId, linkIndexA=link)
+    if contacts == ():
+        return ptx
+    first_element = contacts[0]
+    objcon = first_element[6]
+    return objcon #, yaw, pitch
+
+def grasping_angles(fingertip_link, yawin, pitchin):
+    contact_points = p.getContactPoints(boxId, cubeId, fingertip_link)
+    if contact_points == ():
+        return yawin, pitchin
+    contacts = contact_points[0][5]
+    fingertip_pos, fingertip_quat = p.getLinkState(boxId, fingertip_link)[0:2]
+    contact_vector = [contacts[i] - fingertip_pos[i] for i in range(3)]
+    yaw = math.atan2(contact_vector[1], contact_vector[0])
+    pitch = math.atan2(contact_vector[2], math.sqrt(contact_vector[0]**2 + contact_vector[1]**2))
+    return yaw, pitch
+
+physicsClient = p.connect(p.GUI)
+p.setAdditionalSearchPath(pd.getDataPath())
+p.resetDebugVisualizerCamera(0.6,-79,3.8,(0,0,0.65))
+
+start_time = time.time()
+step = 1./240.
+
+gravityconstant = 0
+p.setGravity(0, 0, gravityconstant)
+
+planeId = p.loadURDF("plane.urdf")
+cubeStartPos = [0, 0, 1]
+cubeStartOrientation = p.getQuaternionFromEuler([0, 0, 0])
+
+# Load the URDF with the correct path
+urdf_directory = r"C:\Users\ge22496\OneDrive - University of Bristol\Documents\bullet3-3.25\examples\pybullet\gym\pybullet_data\openhand_simulation-master\model_o"
+urdf_file = os.path.join(urdf_directory, "model_o.urdf")
+boxId = p.loadURDF(urdf_file, cubeStartPos, cubeStartOrientation)
+
+p.resetBasePositionAndOrientation(boxId, [0, 0, 1], [0, -1, 0, 1])
+base_link_index = -1  # Change this to the index of the base link in your URDF
+p.changeDynamics(boxId, base_link_index, mass=0)
+
+cubeId = p.loadURDF("cube_small.urdf", [0, 0, 0.825])
+#p.changeDynamics(cubeId, base_link_index, mass=0)
+cube_mass = 2.0  # You can change this value to suit your requirements
+cube_friction = 0.7  # You can change this value to suit your requirements
+# friction coefficient is unitless (tangential force/normal force)
+p.changeDynamics(cubeId, base_link_index, mass=cube_mass, lateralFriction=cube_friction)
+p.changeDynamics(boxId, 4, lateralFriction=cube_friction)
+p.changeDynamics(boxId, 7, lateralFriction=cube_friction)
+p.changeDynamics(boxId, 10, lateralFriction=cube_friction)
+p.changeVisualShape(cubeId, -1, rgbaColor=[1, 1, 1, 0.7])
+
+
+# Add mass to cube and find the optimal position.
+# Add if statement to hold the cube in position until it gets touched by the
+# hand, only then should gravity take effect.
+
+joints = p.getNumJoints(boxId)
+#print(joints)
+#for i in range(joints):
+#    jointinfo = p.getJointInfo(boxId, i)
+#    print(jointinfo)
+maxForce = 200
+targetVel = 0.5
+
+pt1=()
+pt2=()
+pt3=()
+obc1=()
+obc2=()
+obc3=()
+ptm = [0,0,0]
+Jm = [0,0,0]
+        
+KvT = 0.01 #Damping Factor Translational
+KvN = np.diag([KvT,KvT,KvT])
+
+Kv = np.block([[KvN, np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 6))],
+               [np.zeros((3, 3)), KvN, np.zeros((3, 3)), np.zeros((3, 6))],
+               [np.zeros((3, 3)), np.zeros((3, 3)), KvN, np.zeros((3, 6))],
+               [np.zeros((6, 3)), np.zeros((6, 3)), np.zeros((6, 3)), np.zeros((6, 6))]])
+
+# Initialize contact status for each fingertip
+contacts_4 = False
+contacts_7 = False
+contacts_10 = False
+
+#u = []
+
+qf1ini = np.array([0, 0 ,0])
+qf2ini = np.array([0, 0 ,0])
+qf3ini = np.array([0, 0 ,0])
+
+pt1ini = np.array([0, 0 ,0])
+pt2ini = np.array([0, 0 ,0])
+pt3ini = np.array([0, 0 ,0])
+
+obc1ini = np.array([0, 0 ,0])
+obc2ini = np.array([0, 0 ,0])
+obc3ini = np.array([0, 0 ,0])
+
+qf1dotini = np.array([0, 0 ,0])
+qf2dotini = np.array([0, 0 ,0])
+qf3dotini = np.array([0, 0 ,0])
+
+joint_velocities_ini = np.array([0, 0, 0, 0, 0, 0,0 ,0])
+
+x_axis = np.array([1, 0, 0])  # Assuming x-axis points in the positive global x direction
+y_axis = np.array([0, 1, 0])  # Assuming y-axis points in the positive global y direction
+
+nx1o = np.array([[1],[0],[0]])
+ny1o = np.array([[0],[1],[0]])
+nz1o = np.array([[0],[0],[1]])
+
+nx2o = np.array([[-1],[0],[0]])
+ny2o = np.array([[0],[-1],[0]])
+nz2o = np.array([[0],[0],[1]])
+
+nx3o = np.array([[0],[1],[0]])
+ny3o = np.array([[-1],[0],[0]])
+nz3o = np.array([[0],[0],[1]])
+
+l1 = 0.102
+l2 = 0.0738
+l = np.array([[l1],[l2]])
+grasping = False
+donegrav = False
+
+for t in range(1200):
+    if grasping == True and donegrav == False:
+        p.setGravity(0, 0, -9.81)
+        print("gravity is turned on")
+        donegrav = True
+    p.stepSimulation()
+
+
+    # Get joint information to reset after each simulation step
+    current_joint_positions = [p.getJointState(boxId, i)[0] for i in range(p.getNumJoints(boxId))]
+    current_vel, current_ang = p.getBaseVelocity(cubeId) # current_ang is wo
+    current_ang = np.array(current_ang)
+    current_vel = np.array(current_vel)
+
+    
+    joint_position_matrix, joint_velocity_matrix = joint_vels(link_indices)
+    
+    Mf = inertia_calc(boxId, link_indices)
+    obj_mass = np.array([[cube_mass, 0, 0], [0, cube_mass, 0],[0, 0, cube_mass]])
+    Io = np.zeros((3,3))
+    Mo = np.block([[obj_mass, np.zeros((3, 3))], [np.zeros((3, 3)), Io]])
+    M = np.block([[Mf, np.zeros((8,6))],
+                  [np.zeros((6,8)),Mo]])
+
+    Ro = axis_calculation(cubeId)
+    nx1, ny1, nz1, nx2, ny2, nz2, nx3, ny3, nz3 = reference_frames(Ro)
+
+    dnx1 = -np.dot(skew_matrix(nx1),current_ang)
+    dny1 = -np.dot(skew_matrix(ny1),current_ang)
+    dnz1 = -np.dot(skew_matrix(nz1),current_ang)
+    dnx2 = -np.dot(skew_matrix(nx2),current_ang)
+    dny2 = -np.dot(skew_matrix(ny2),current_ang)
+    dnz2 = -np.dot(skew_matrix(nz2),current_ang)
+    dnx3 = -np.dot(skew_matrix(nx3),current_ang)
+    dny3 = -np.dot(skew_matrix(ny3),current_ang)
+    dnz3 = -np.dot(skew_matrix(nz3),current_ang)
+
+
+    # Calculate contact constraints (D)
+    
+    q11, q12, q13 = find_angles(3)
+    q21, q22, q23 = find_angles(6)
+    q31, q32, q33 = find_angles(9)
+
+    qf1 = np.array([q11, q12, q13])
+    qf2 = np.array([q21, q22, q23])
+    qf3 = np.array([q31, q32, q33])
+
+    qf1dot = np.array(qdot(qf1, qf1ini))
+    qf2dot = np.array(qdot(qf2, qf2ini))
+    qf3dot = np.array(qdot(qf3, qf3ini))
+
+    qf1dotdot = np.array(qdot(qf1dot, qf1dotini))
+    qf2dotdot = np.array(qdot(qf2dot, qf2dotini))
+    qf3dotdot = np.array(qdot(qf3dot, qf3dotini))
+    joint_accelerations = qdot(joint_velocity_matrix, joint_velocities_ini)
+
+ 
+    Cf = p.calculateInverseDynamics(boxId, joint_position_matrix, joint_velocity_matrix, joint_accelerations)
+    C = np.block([[np.diag(Cf), np.zeros((8,6))],
+                [np.zeros((6,8)),np.zeros((6,6))]])
+
+
+    #J1 = jacobian(3)
+    #J2 = jacobian(6)
+    #J3 = jacobian(9)
+
+    J1 = Jacobianproper(qf1, l)
+    J2 = Jacobianproper(qf2, l)
+    J3 = Jacobianproper(qf3, l)
+
+    Jv1 = J1[:3, :]
+    Jw1 = J1[3:, :]
+    Jv2 = J2[:3, :]
+    Jw2 = J2[3:, :]
+    Jv3 = J3[:3, :]
+    Jw3 = J3[3:, :]    
+    
+    xdot = np.concatenate((qf1dot, qf2dot, qf3dot, current_vel, current_ang), axis=0).reshape(-1, 1)
+    u = np.dot(-Kv, xdot)
+
+    physics_params = p.getPhysicsEngineParameters(physicsClient)
+    time_step = physics_params["fixedTimeStep"]
+    current_time = time.time() - start_time
+
+    if grasping == False:
+        if pt1 == ():
+            contacts4 = p.getContactPoints(boxId, linkIndexA = 4)
+            if contacts4:
+                first_element4 = contacts4[0]
+                contacts_4 = True
+                # PT1 is calculated here
+                #pt1 = p.getLinkState(boxId,4)[0]
+                #pt1 = np.array(pt1).reshape(-1,1)
+                com1w = p.getLinkState(boxId,4)[4]
+                pt1 = np.transpose([first_element4[5]])
+                yaw1, pitch1 = contact_angles(4)
+            elif not contacts4:
+                contacts_4 = False
+        if pt2 == ():
+            contacts7 = p.getContactPoints(boxId, linkIndexA = 7)
+            if contacts7:
+                first_element7 = contacts7[0]
+                contacts_7 = True
+                pt2 = np.transpose([first_element7[5]])
+                #pt2 = np.transpose(p.getLinkState(boxId,7)[0])
+                #pt2 = np.array(pt2).reshape(-1,1)
+                com2w = p.getLinkState(boxId,7)[4]
+                yaw2, pitch2 = contact_angles(7)
+            elif not contacts7:
+                contacts_7 = False
+        if pt3 == ():
+            contacts10 = p.getContactPoints(boxId, linkIndexA = 10)
+            if contacts10:
+                first_element10 = contacts10[0]
+                contacts_10 = True
+                pt3 = np.transpose([first_element10[5]])
+                #pt3 = np.transpose(p.getLinkState(boxId,10)[0])
+                #pt3 = np.array(pt3).reshape(-1,1)
+                com3w = p.getLinkState(boxId,10)[4]
+                yaw3, pitch3 = contact_angles(10)
+            elif not contacts10:
+                contacts_10 = False
+            # I think because the fingertip will always be in contact with the object
+            # after the point of contact then it will always read the fingertip as being
+            # from the element that touched it first. FIXED THIS ISSUE
+
+        if not contacts_4:
+            p.setJointMotorControl2(bodyUniqueId=boxId, jointIndex=3,
+                                    controlMode=p.VELOCITY_CONTROL,
+                                    targetVelocity=targetVel, force=maxForce)
+        if not contacts_7:
+            p.setJointMotorControl2(bodyUniqueId=boxId, jointIndex=5,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition = -math.pi *(1/3),force = 500)
+            p.setJointMotorControl2(bodyUniqueId=boxId, jointIndex=6,
+                                    controlMode=p.VELOCITY_CONTROL,
+                                    targetVelocity=targetVel, force=maxForce)
+        if not contacts_10:
+            p.setJointMotorControl2(bodyUniqueId=boxId, jointIndex=8,
+                                    controlMode=p.POSITION_CONTROL,
+                                    targetPosition = math.pi *(1/3),force = 500)
+            p.setJointMotorControl2(bodyUniqueId=boxId, jointIndex=9,
+                                    controlMode=p.VELOCITY_CONTROL,
+                                    targetVelocity=targetVel, force=maxForce)
+
+        if contacts_4 and grasping == False:
+            #print("Contact 4")
+            # Perform inverse kinematics for fingertip 4 and apply position control
+            jointPoses4 = p.calculateInverseKinematics(boxId, 4, pt1)
+            for i in range(2):
+                p.setJointMotorControl2(boxId, i + 3, p.POSITION_CONTROL,
+                                        targetPosition=jointPoses4[i],
+                                        targetVelocity=0, force=maxForce,
+                                        positionGain=0.03)
+
+        
+        if contacts_7 and grasping == False:
+            #print("Contact 7")
+            # Perform inverse kinematics for fingertip 7 and apply position control
+            jointPoses7 = p.calculateInverseKinematics(boxId, 7, pt2)
+            for i in range(2):
+                p.setJointMotorControl2(boxId, i + 6, p.POSITION_CONTROL,
+                                        targetPosition=jointPoses7[i],
+                                        targetVelocity=0, force=maxForce,
+                                        positionGain=0.03)
+
+        if contacts_10 and grasping == False:
+            #print("Contact 10")
+            # Perform inverse kinematics for fingertip 10 and apply position control
+            jointPoses10 = p.calculateInverseKinematics(boxId, 10, pt3)
+            for i in range(2):
+                p.setJointMotorControl2(boxId, i + 9, p.POSITION_CONTROL,
+                                        targetPosition=jointPoses10[i],
+                                        targetVelocity=0, force=maxForce,
+                                        positionGain=0.03)
+        
+        if contacts_10 and contacts_7 and contacts_4:
+            grasping = True
+            print("Grasping")
+            line1 = p.addUserDebugLine(pt1, pt2, line_color, lineWidth=2)
+            line2 = p.addUserDebugLine(pt2, pt3, line_color, lineWidth=2)
+            line3 = p.addUserDebugLine(pt1, pt3, line_color, lineWidth=2)
+        
+    
+    if grasping == True:
+        tk += 1
+        #J1n = jacobiancalc(boxId, 4, qf1, qf1dot, qf1dotdot)
+        #IK = jacobiancalc(boxId, 4, qf1, qf1dot, qf1dotdot)
+        #J1n = Jacobianproper(qf1, l)
+
+        #pt_ is the object contacts for this iteration on the fingertips
+        
+        pt1 = grasping_contacts(boxId, 4, pt1)
+        pt2 = grasping_contacts(boxId, 7, pt2)
+        pt3 = grasping_contacts(boxId, 10, pt3)
+
+        pt1vel = qdot(pt1, pt1ini)
+        pt2vel = qdot(pt2, pt2ini)
+        pt3vel = qdot(pt3, pt3ini)
+
+        abs1 = absvel(pt1vel)
+        abs2 = absvel(pt2vel)
+        abs3 = absvel(pt3vel)
+
+        obc1 = object_contacts(boxId, 4, pt1)
+        obc2 = object_contacts(boxId, 4, pt1)
+        obc3 = object_contacts(boxId, 4, pt1)
+
+        obc1vel = qdot(obc1, obc1ini)
+        obc2vel = qdot(obc2, obc2ini)
+        obc3vel = qdot(obc3, obc3ini)
+
+        absob1v = absvel(obc1vel)
+        absob2v = absvel(obc2vel)
+        absob3v = absvel(obc3vel)
+
+        fd1 = fc * (absob1v/abs1)
+        fd2 = fc * (absob2v/abs2)
+        fd3 = fc * (absob3v/abs3)
+
+        yaw1, pitch1 = grasping_angles(4, yaw1, pitch1)
+        yaw2, pitch2 = grasping_angles(7, yaw2, pitch2)
+        yaw3, pitch3 = grasping_angles(10, yaw3, pitch3)
+
+        #if t % 50 == 0:
+            #print(pt1)
+        p.removeAllUserDebugItems()
+        line1 = p.addUserDebugLine(pt1, pt2, line_color, lineWidth=2)
+        line2 = p.addUserDebugLine(pt2, pt3, line_color, lineWidth=2)
+        line3 = p.addUserDebugLine(pt1, pt3, line_color, lineWidth=2)
+        
+
+        #print(pt1, pt2, pt3)
+        
+        tFactor = 1
+        rFactor = 1
+        for i in range(len(pt1)):
+            ptm[i] = (pt1[i] + pt2[i] + pt3[i])/3
+        Jm = - (Jv1 + Jv2 + Jv3) / 3
+        avPhi = (yaw1 + yaw2 + yaw3)/10
+        avPsi = (pitch1 + pitch2 + pitch3)/3
+        
+        uT1 = uT_calc(tFactor, fd1, Jv1, Jm, ptm, pt1)
+        uT2 = uT_calc(tFactor, fd2, Jv2, Jm, ptm, pt2)
+        uT3 = uT_calc(tFactor, fd3, Jv3, Jm, ptm, pt3)
+
+        uR1, uR2, uR3 = uR_calc(rFactor, r, fd1, fd2, fd3, Jw1, Jw2, Jw3, avPsi, avPhi)
+
+        u[0:3] = u[0:3] + uT1 + uR1
+        u[3:6] = u[3:6] + uT2 + uR2
+        u[6:9] = u[6:9] + uT3 + uR3
+
+        #u is the finger torque joint inputs
+         #u[0:3] is the first finger, etc
+        # See if you can drive the joints with this force using these inputs
+
+        dJ1 = JacobianDerivative(qf1, qf1dot, l)
+        dJ2 = JacobianDerivative(qf2, qf2dot, l)
+        dJ3 = JacobianDerivative(qf3, qf3dot, l)
+
+        dJv1 = dJ1[0:3, :]
+        dJw1 = dJ1[3:6, :]
+        dJv2 = dJ2[0:3, :]
+        dJw2 = dJ2[3:6, :]
+        dJv3 = dJ3[0:3, :]
+        dJw3 = dJ3[3:6, :]
+
+        joint3torque = math.sqrt(((u[0]**2) + (u[1]**2)))
+        joint6torque = math.sqrt(((u[3]**2) + (u[4]**2)))
+        joint9torque = math.sqrt(((u[6]**2) + (u[7]**2)))
+
+        joint4angle = joint3torque/springconstant
+        joint7angle = joint6torque/springconstant
+        joint10angle = joint9torque/springconstant
+
+        p.setJointMotorControl2(boxId, 3, controlMode=p.TORQUE_CONTROL, force = joint3torque)
+        p.setJointMotorControl2(boxId, 4, controlMode=p.POSITION_CONTROL, targetPosition = joint4angle, targetVelocity = 0.2, positionGain = 0.03, force = maxForce)
+        p.setJointMotorControl2(boxId, 6, controlMode=p.TORQUE_CONTROL, force = joint6torque)
+        p.setJointMotorControl2(boxId, 7, controlMode=p.POSITION_CONTROL, targetPosition = joint7angle, targetVelocity = 0.2, positionGain = 0.03, force = maxForce)
+        p.setJointMotorControl2(boxId, 9, controlMode=p.TORQUE_CONTROL, force = joint9torque)
+        p.setJointMotorControl2(boxId, 10, controlMode=p.POSITION_CONTROL, targetPosition = joint10angle, targetVelocity = 0.2, positionGain = 0.03, force = maxForce)
+
+        obc1ini = obc1
+        obc2ini = obc2
+        obc3ini = obc3
+
+        pt1ini = pt1
+        pt2ini = pt2
+        pt3ini = pt3
+
+        vp1 = p.getLinkState(boxId, 4, computeLinkVelocity=1, computeForwardKinematics=1)
+        vp1v = vp1[6]
+        vp2 = p.getLinkState(boxId, 7, computeLinkVelocity=1, computeForwardKinematics=1)
+        vp2v = vp2[6]
+        vp3 = p.getLinkState(boxId, 10, computeLinkVelocity=1, computeForwardKinematics=1)
+        vp3v = vp3[6]
+
+        #Store qfdot values into an array that you can then export into a different script to make your graphs. Need to make
+        #an array which has the time and the velocity profile of each finger.
+
+        #The values of qf1 are each individual angle of the finger joint, not the x, y and z components.
+        #you want pt_vel
+        #if tk != 1:
+        timearray.append(tk*step)
+        velocity_profile1x.append(vp1v[0])
+        velocity_profile2x.append(vp2v[0])
+        velocity_profile3x.append(vp3v[0])
+        velocity_profile1y.append(vp1v[1])
+        velocity_profile2y.append(vp2v[1])
+        velocity_profile3y.append(vp3v[1])
+        velocity_profile1z.append(vp1v[2])
+        velocity_profile2z.append(vp2v[2])
+        velocity_profile3z.append(vp3v[2])
+        fdprofile1.append(fd1)
+        fdprofile2.append(fd2)
+        fdprofile3.append(fd3)
+
+
+        
+        #define r
+        # ADD IN: change the dynamics of the cube so that it now responds to gravity and deformations
+        
+        # maybe need to make a new ID object for each finger so you can calculate the inverse kiematics for each object.
+
+    
+    qf1ini = qf1
+    qf2ini = qf2
+    qf3ini = qf3
+
+    qf1dotini = qf1dot
+    qf2dotini = qf2dot
+    qf3dotini = qf3dot
+
+    joint_velocities_ini = joint_velocity_matrix 
+    
+    time.sleep(step)
+
+cubePos, cubeOrn = p.getBasePositionAndOrientation(boxId)
+datafile1 = zip(velocity_profile1x, velocity_profile1y, velocity_profile1z, timearray)
+datafile2 = zip(velocity_profile2x, velocity_profile2y, velocity_profile2z, timearray)
+datafile3 = zip(velocity_profile3x, velocity_profile3y, velocity_profile3z, timearray)
+datafileslip = zip(fdprofile1, fdprofile2, fdprofile3, timearray)
+
+with open("datafinger1", 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    csv_writer.writerow([ 'X', 'Y', 'Z', 'Time'])  # Write header
+    csv_writer.writerows(datafile1)
+
+with open("datafinger2", 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    csv_writer.writerow([ 'X', 'Y', 'Z', 'Time'])  # Write header
+    csv_writer.writerows(datafile2)
+
+with open("datafinger3", 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    csv_writer.writerow([ 'X', 'Y', 'Z', 'Time'])  # Write header
+    csv_writer.writerows(datafile3)
+
+with open("datafingerforce", 'w', newline='') as csvfile:
+    csv_writer = csv.writer(csvfile)
+    csv_writer.writerow([ 'F1', 'F2', 'F3', 'Time'])  # Write header
+    csv_writer.writerows(datafileslip)
+
+p.disconnect()
